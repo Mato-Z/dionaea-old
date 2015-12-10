@@ -1123,6 +1123,525 @@ class logsqlhandler(ihandler):
             self.postgresql_init()
 
 
+    def postgresql_init(self): 
+        import psycopg2
+
+        cfg_database = g_dionaea.config()['modules']['python']['logsql']['postgresql_psycopg2']['database']
+        cfg_user = g_dionaea.config()['modules']['python']['logsql']['postgresql_psycopg2']['user']
+        cfg_password = g_dionaea.config()['modules']['python']['logsql']['postgresql_psycopg2']['password']
+        cfg_host = g_dionaea.config()['modules']['python']['logsql']['postgresql_psycopg2']['host']
+        cfg_port = g_dionaea.config()['modules']['python']['logsql']['postgresql_psycopg2']['port']
+
+        try:
+            self.dbh  = psycopg2.connect(database=cfg_database, user=cfg_user, password=cfg_password, host=cfg_host, port=cfg_port)
+        except:
+            print("I am unable to connect to the database")
+
+        self.cursor = self.dbh.cursor()
+        update = False
+
+        def index_exists(index_name):
+            self.cursor.execute("""SELECT 1
+                                    FROM   pg_class c
+                                    JOIN   pg_namespace n ON n.oid = c.relnamespace
+                                    WHERE  c.relname = '%s'
+                                    AND    n.nspname = 'public'""" % index_name)
+            exists = self.cursor.rowcount
+
+            if exists > 0:
+                return True
+            else:
+                return False
+
+        self.cursor.execute("""CREATE TABLE IF NOT EXISTS
+            connections (
+                connection INTEGER SERIAL KEY,
+                connection_type TEXT,
+                connection_transport TEXT,
+                connection_protocol TEXT,
+                connection_timestamp INTEGER,
+                connection_root INTEGER,
+                connection_parent INTEGER,
+                local_host TEXT,
+                local_port INTEGER,
+                remote_host TEXT,
+                remote_hostname TEXT,
+                remote_port INTEGER
+            )""")
+
+        self.cursor.execute("""DROP TRIGGER IF EXISTS connections_INSERT_update_connection_root_trg ON connections""")
+        self.cursor.execute("""DROP FUNCTION IF EXISTS connections_INSERT_update_connection_root_fnc()""")
+
+        self.cursor.execute("""CREATE FUNCTION connections_INSERT_update_connection_root_fnc() RETURNS trigger AS $connections_INSERT_update_connection_root_fnc$
+            BEGIN
+                UPDATE connections SET connection_root = connection WHERE connection = NEW.connection AND NEW.connection_root IS NULL;
+                RETURN NEW;
+            END;
+            $connections_INSERT_update_connection_root_fnc$ LANGUAGE plpgsql;""")
+
+
+        self.cursor.execute("""CREATE TRIGGER    connections_INSERT_update_connection_root_trg
+            AFTER INSERT ON connections 
+            FOR EACH ROW
+            WHEN (NEW.connection_root IS NULL)
+                EXECUTE PROCEDURE connections_INSERT_update_connection_root_fnc();""")
+
+
+        for idx in ["type","timestamp","root","parent"]:
+            if not index_exists("connections_%s_idx" % (idx)):
+                self.cursor.execute("""CREATE INDEX connections_%s_idx
+            ON connections (connection_%s)""" % (idx, idx))
+
+        for idx in ["local_host","local_port","remote_host"]:
+            if not index_exists("connections_%s_idx" % (idx)):
+                self.cursor.execute("""CREATE INDEX connections_%s_idx
+            ON connections (%s)""" % (idx, idx))
+
+
+#         self.cursor.execute("""CREATE TABLE IF NOT EXISTS
+#            bistreams (
+#                bistream INTEGER PRIMARY KEY,
+#                connection INTEGER,
+#                bistream_data TEXT
+#            )""")
+#
+#        self.cursor.execute("""CREATE TABLE IF NOT EXISTS
+#            smbs (
+#                smb INTEGER PRIMARY KEY,
+#                connection INTEGER,
+#                smb_direction TEXT,
+#                smb_action TEXT,
+#                CONSTRAINT smb_connection_fkey FOREIGN KEY (connection) REFERENCES connections (connection)
+#            )""")
+
+        self.cursor.execute("""CREATE TABLE IF NOT EXISTS 
+            dcerpcbinds (
+                dcerpcbind SERIAL PRIMARY KEY,
+                connection INTEGER,
+                dcerpcbind_uuid TEXT,
+                dcerpcbind_transfersyntax TEXT
+                -- CONSTRAINT dcerpcs_connection_fkey FOREIGN KEY (connection) REFERENCES connections (connection)
+            )""")
+
+        for idx in ["uuid","transfersyntax"]:
+            if not index_exists("dcerpcbinds_%s_idx" % (idx)):
+                self.cursor.execute("""CREATE INDEX dcerpcbinds_%s_idx 
+            ON dcerpcbinds (dcerpcbind_%s)""" % (idx, idx))
+
+        self.cursor.execute("""CREATE TABLE IF NOT EXISTS 
+            dcerpcrequests (
+                dcerpcrequest SERIAL PRIMARY KEY,
+                connection INTEGER,
+                dcerpcrequest_uuid TEXT,
+                dcerpcrequest_opnum INTEGER
+                -- CONSTRAINT dcerpcs_connection_fkey FOREIGN KEY (connection) REFERENCES connections (connection)
+            )""")
+
+        for idx in ["uuid","opnum"]:
+            if not index_exists("dcerpcrequests_%s_idx" % (idx)):
+                self.cursor.execute("""CREATE INDEX dcerpcrequests_%s_idx 
+            ON dcerpcrequests (dcerpcrequest_%s)""" % (idx, idx))
+
+
+        self.cursor.execute("""CREATE TABLE IF NOT EXISTS 
+            dcerpcservices (
+                dcerpcservice SERIAL PRIMARY KEY,
+                dcerpcservice_uuid TEXT,
+                dcerpcservice_name TEXT,
+                CONSTRAINT dcerpcservice_uuid_uniq UNIQUE (dcerpcservice_uuid)
+            )""")
+
+        from uuid import UUID
+        from dionaea.smb import rpcservices
+        import inspect
+        services = inspect.getmembers(rpcservices, inspect.isclass)
+        for name, servicecls in services:
+            if not name == 'RPCService' and issubclass(servicecls, rpcservices.RPCService):
+                try:
+                    self.cursor.execute("INSERT INTO dcerpcservices (dcerpcservice_name, dcerpcservice_uuid) VALUES (%s,%s)",
+                        (name, str(UUID(hex=servicecls.uuid))) )
+                except Exception as e:
+#                    print("dcerpcservice %s existed %s " % (servicecls.uuid, e) )
+                    pass
+
+        self.dbh.commit()
+
+        logger.info("Getting RPC Services")
+        self.cursor.execute("SELECT * FROM dcerpcservices")
+#        print(r)
+        names = [self.cursor.description[x][0] for x in range(len(self.cursor.description))]
+        r = [ dict(zip(names, i)) for i in self.cursor]
+#        print(r)
+        r = dict([(UUID(i['dcerpcservice_uuid']).hex,i['dcerpcservice']) for i in r])
+#        print(r)
+
+
+        self.cursor.execute("""CREATE TABLE IF NOT EXISTS 
+            dcerpcserviceops (
+                dcerpcserviceop SERIAL PRIMARY KEY,
+                dcerpcservice INTEGER,
+                dcerpcserviceop_opnum INTEGER,
+                dcerpcserviceop_name TEXT,
+                dcerpcserviceop_vuln TEXT,
+                CONSTRAINT dcerpcop_service_opnum_uniq UNIQUE (dcerpcservice, dcerpcserviceop_opnum)
+            )""")
+
+        logger.info("Setting RPC ServiceOps")
+        for name, servicecls in services:
+            if not name == 'RPCService' and issubclass(servicecls, rpcservices.RPCService):
+                for opnum in servicecls.ops:
+                    op = servicecls.ops[opnum]
+                    uuid = servicecls.uuid
+                    vuln = ''
+                    dcerpcservice = r[uuid]
+                    if opnum in servicecls.vulns:
+                        vuln = servicecls.vulns[opnum]
+                    try:
+                        self.cursor.execute("INSERT INTO dcerpcserviceops (dcerpcservice, dcerpcserviceop_opnum, dcerpcserviceop_name, dcerpcserviceop_vuln) VALUES (%s,%s,%s,%s)", 
+                            (dcerpcservice, opnum, op, vuln))
+                    except:
+#                        print("%s %s %s %s %s existed" % (dcerpcservice, uuid, name, op, vuln))
+                        pass
+
+        self.dbh.commit()
+
+        # NetPathCompare was called NetCompare in dcerpcserviceops
+        try:
+            logger.debug("Trying to update table: dcerpcserviceops")
+            self.cursor.execute("""SELECT * FROM dcerpcserviceops WHERE dcerpcserviceop_name = 'NetCompare'""")
+            x = self.cursor.fetchall()
+            if len(x) > 0:
+                self.cursor.execute("""UPDATE dcerpcserviceops SET dcerpcserviceop_name = 'NetPathCompare' WHERE dcerpcserviceop_name = 'NetCompare'""")
+                logger.debug("... done")
+            else:
+                logger.info("... not required")
+        except Exception as e:
+            print(e)
+            logger.info("... not required")
+
+        self.cursor.execute("""CREATE TABLE IF NOT EXISTS 
+            emu_profiles (
+                emu_profile SERIAL PRIMARY KEY,
+                connection INTEGER,
+                emu_profile_json TEXT
+                -- CONSTRAINT emu_profiles_connection_fkey FOREIGN KEY (connection) REFERENCES connections (connection)
+            )""")
+
+        self.dbh.commit()
+
+        self.cursor.execute("""CREATE TABLE IF NOT EXISTS 
+            emu_services (
+                emu_serivce SERIAL PRIMARY KEY,
+                connection INTEGER,
+                emu_service_url TEXT
+                -- CONSTRAINT emu_services_connection_fkey FOREIGN KEY (connection) REFERENCES connections (connection)
+            )""")
+
+        self.cursor.execute("""CREATE TABLE IF NOT EXISTS 
+            offers (
+                offer SERIAL PRIMARY KEY,
+                connection INTEGER,
+                offer_url TEXT
+                -- CONSTRAINT offers_connection_fkey FOREIGN KEY (connection) REFERENCES connections (connection)
+            )""")
+
+        if not index_exists("offers_url_idx"):
+            self.cursor.execute("""CREATE INDEX offers_url_idx ON offers (offer_url)""")
+
+        self.cursor.execute("""CREATE TABLE IF NOT EXISTS 
+            downloads (
+                download SERIAL PRIMARY KEY,
+                connection INTEGER,
+                download_url TEXT,
+                download_md5_hash TEXT
+                -- CONSTRAINT downloads_connection_fkey FOREIGN KEY (connection) REFERENCES connections (connection)
+            )""")
+
+        for idx in ["url", "md5_hash"]:
+            if not index_exists("downloads_%s_idx" % (idx)):
+                self.cursor.execute("""CREATE INDEX downloads_%s_idx 
+            ON downloads (download_%s)""" % (idx, idx))
+
+
+        self.cursor.execute("""CREATE TABLE IF NOT EXISTS 
+            resolves (
+                resolve SERIAL PRIMARY KEY,
+                connection INTEGER,
+                resolve_hostname TEXT,
+                resolve_type TEXT,
+                resolve_result TEXT
+            )""")
+
+        self.cursor.execute("""CREATE TABLE IF NOT EXISTS 
+            p0fs (
+                p0f SERIAL PRIMARY KEY,
+                connection INTEGER,
+                p0f_genre TEXT,
+                p0f_link TEXT,
+                p0f_detail TEXT,
+                p0f_uptime INTEGER,
+                p0f_tos TEXT,
+                p0f_dist INTEGER,
+                p0f_nat INTEGER,
+                p0f_fw INTEGER
+                -- CONSTRAINT p0fs_connection_fkey FOREIGN KEY (connection) REFERENCES connections (connection)
+            )""")
+
+        for idx in ["genre","detail","uptime"]:
+            if not index_exists("p0fs_%s_idx" % (idx)):
+                self.cursor.execute("""CREATE INDEX p0fs_%s_idx 
+            ON p0fs (p0f_%s)""" % (idx, idx))
+
+        self.cursor.execute("""CREATE TABLE IF NOT EXISTS
+            logins (
+                login SERIAL PRIMARY KEY,
+                connection INTEGER,
+                login_username TEXT,
+                login_password TEXT
+                -- CONSTRAINT logins_connection_fkey FOREIGN KEY (connection) REFERENCES connections (connection)
+            )""")
+
+        for idx in ["username","password"]:
+            if not index_exists("logins_%s_idx" % (idx)):
+                self.cursor.execute("""CREATE INDEX logins_%s_idx 
+            ON logins (login_%s)""" % (idx, idx))
+
+        self.cursor.execute("""CREATE TABLE IF NOT EXISTS
+            mssql_fingerprints (
+                mssql_fingerprint SERIAL PRIMARY KEY,
+                connection INTEGER,
+                mssql_fingerprint_hostname TEXT,
+                mssql_fingerprint_appname TEXT,
+                mssql_fingerprint_cltintname TEXT
+                -- CONSTRAINT mssql_fingerprints_connection_fkey FOREIGN KEY (connection) REFERENCES connections (connection)
+            )""")
+
+        for idx in ["hostname","appname","cltintname"]:
+            if not index_exists("mssql_fingerprints_%s_idx" % (idx)):
+                self.cursor.execute("""CREATE INDEX mssql_fingerprints_%s_idx 
+            ON mssql_fingerprints (mssql_fingerprint_%s)""" % (idx, idx))
+
+        self.cursor.execute("""CREATE TABLE IF NOT EXISTS
+            mssql_commands (
+                mssql_command SERIAL PRIMARY KEY,
+                connection INTEGER,
+                mssql_command_status TEXT,
+                mssql_command_cmd TEXT
+                -- CONSTRAINT mssql_commands_connection_fkey FOREIGN KEY (connection) REFERENCES connections (connection)
+            )""")
+
+        for idx in ["status"]:
+            if not index_exists("mssql_commands_%s_idx" % (idx)):
+                self.cursor.execute("""CREATE INDEX mssql_commands_%s_idx 
+            ON mssql_commands (mssql_command_%s)""" % (idx, idx))
+
+
+
+        self.cursor.execute("""CREATE TABLE IF NOT EXISTS virustotals (
+                virustotal SERIAL PRIMARY KEY,
+                virustotal_md5_hash TEXT NOT NULL,
+                virustotal_timestamp INTEGER NOT NULL,
+                virustotal_permalink TEXT NOT NULL
+            )""")
+
+        for idx in ["md5_hash"]:
+            if not index_exists("virustotals_%s_idx" % (idx)):
+                self.cursor.execute("""CREATE INDEX virustotals_%s_idx 
+            ON virustotals (virustotal_%s)""" % (idx, idx))
+
+        self.cursor.execute("""CREATE TABLE IF NOT EXISTS virustotalscans (
+            virustotalscan SERIAL PRIMARY KEY,
+            virustotal INTEGER NOT NULL,
+            virustotalscan_scanner TEXT NOT NULL,
+            virustotalscan_result TEXT
+        )""")
+
+
+        for idx in ["scanner","result"]:
+            if not index_exists("virustotalscans_%s_idx" % (idx)):
+                self.cursor.execute("""CREATE INDEX virustotalscans_%s_idx 
+            ON virustotalscans (virustotalscan_%s)""" % (idx, idx))
+
+        if not index_exists("virustotalscans_virustotal_idx"):
+            self.cursor.execute("""CREATE INDEX virustotalscans_virustotal_idx 
+            ON virustotalscans (virustotal)""")
+
+        self.cursor.execute("""CREATE TABLE IF NOT EXISTS
+            mysql_commands (
+                mysql_command SERIAL PRIMARY KEY,
+                connection INTEGER,
+                mysql_command_cmd NUMERIC NOT NULL
+                -- CONSTRAINT mysql_commands_connection_fkey FOREIGN KEY (connection) REFERENCES connections (connection)
+            )""")
+
+        self.cursor.execute("""CREATE TABLE IF NOT EXISTS
+            mysql_command_args (
+                mysql_command_arg SERIAL PRIMARY KEY,
+                mysql_command INTEGER,
+                mysql_command_arg_index NUMERIC NOT NULL,
+                mysql_command_arg_data TEXT NOT NULL
+                -- CONSTRAINT mysql_commands_connection_fkey FOREIGN KEY (connection) REFERENCES connections (connection)
+            )""")
+
+        for idx in ["command"]:
+            if not index_exists("mysql_command_args_%s_idx" % (idx)):
+                self.cursor.execute("""CREATE INDEX mysql_command_args_%s_idx 
+            ON mysql_command_args (mysql_%s)""" % (idx, idx))
+
+        self.cursor.execute("""CREATE TABLE IF NOT EXISTS
+            mysql_command_ops (
+                mysql_command_op SERIAL PRIMARY KEY,
+                mysql_command_cmd INTEGER NOT NULL,
+                mysql_command_op_name TEXT NOT NULL,
+                CONSTRAINT mysql_command_cmd_uniq UNIQUE (mysql_command_cmd)
+            )""")
+
+        self.dbh.commit()
+
+        from dionaea.mysql.include.packets import MySQL_Commands
+        logger.info("Setting MySQL Command Ops")
+        for num,name in MySQL_Commands.items():
+            try:
+                self.cursor.execute("INSERT INTO mysql_command_ops (mysql_command_cmd, mysql_command_op_name) VALUES (%s,%s)",
+                            (num, name))
+            except:
+                pass
+
+        self.dbh.commit()
+
+        self.cursor.execute("""CREATE TABLE IF NOT EXISTS
+            sip_commands (
+                sip_command SERIAL PRIMARY KEY,
+                connection INTEGER,
+                sip_command_method TEXT,
+                sip_command_call_id TEXT,
+                sip_command_user_agent TEXT,
+                sip_command_allow INTEGER
+            -- CONSTRAINT sip_commands_connection_fkey FOREIGN KEY (connection) REFERENCES connections (connection)
+        )""")
+
+        self.cursor.execute("""CREATE TABLE IF NOT EXISTS
+            sip_addrs (
+                sip_addr SERIAL PRIMARY KEY,
+                sip_command INTEGER,
+                sip_addr_type TEXT,
+                sip_addr_display_name TEXT,
+                sip_addr_uri_scheme TEXT,
+                sip_addr_uri_user TEXT,
+                sip_addr_uri_password TEXT,
+                sip_addr_uri_host TEXT,
+                sip_addr_uri_port TEXT
+                -- CONSTRAINT sip_addrs_command_fkey FOREIGN KEY (sip_command) REFERENCES sip_commands (sip_command)
+            )""")
+
+        self.cursor.execute("""CREATE TABLE IF NOT EXISTS
+            sip_vias (
+                sip_via SERIAL PRIMARY KEY,
+                sip_command INTEGER,
+                sip_via_protocol TEXT,
+                sip_via_address TEXT,
+                sip_via_port TEXT
+                -- CONSTRAINT sip_vias_command_fkey FOREIGN KEY (sip_command) REFERENCES sip_commands (sip_command)
+            )""")
+
+        self.cursor.execute("""CREATE TABLE IF NOT EXISTS
+            sip_sdp_origins (
+                sip_sdp_origin SERIAL PRIMARY KEY,
+                sip_command INTEGER,
+                sip_sdp_origin_username TEXT,
+                sip_sdp_origin_sess_id TEXT,
+                sip_sdp_origin_sess_version TEXT,
+                sip_sdp_origin_nettype TEXT,
+                sip_sdp_origin_addrtype TEXT,
+                sip_sdp_origin_unicast_address TEXT
+                -- CONSTRAINT sip_sdp_origins_fkey FOREIGN KEY (sip_command) REFERENCES sip_commands (sip_command)
+            )""")
+
+        self.cursor.execute("""CREATE TABLE IF NOT EXISTS
+            sip_sdp_connectiondatas (
+                sip_sdp_connectiondata SERIAL PRIMARY KEY,
+                sip_command INTEGER,
+                sip_sdp_connectiondata_nettype TEXT,
+                sip_sdp_connectiondata_addrtype TEXT,
+                sip_sdp_connectiondata_connection_address TEXT,
+                sip_sdp_connectiondata_ttl TEXT,
+                sip_sdp_connectiondata_number_of_addresses TEXT 
+                -- CONSTRAINT sip_sdp_connectiondatas_fkey FOREIGN KEY (sip_command) REFERENCES sip_commands (sip_command)
+            )""")
+
+        self.cursor.execute("""CREATE TABLE IF NOT EXISTS
+            sip_sdp_medias (
+                sip_sdp_media SERIAL PRIMARY KEY,
+                sip_command INTEGER,
+                sip_sdp_media_media TEXT,
+                sip_sdp_media_port TEXT,
+                sip_sdp_media_number_of_ports TEXT,
+                sip_sdp_media_proto TEXT
+--                sip_sdp_media_fmt,
+--                sip_sdp_media_attributes
+                -- CONSTRAINT sip_sdp_medias_fkey FOREIGN KEY (sip_command) REFERENCES sip_commands (sip_command)
+            )""")
+
+#        self.cursor.execute("""CREATE TABLE IF NOT EXISTS
+#            httpheaders (
+#                httpheader INTEGER PRIMARY KEY,
+#                connection INTEGER,
+#                http_headerkey TEXT,
+#                http_headervalue TEXT,
+#                -- CONSTRAINT httpheaders_connection_fkey FOREIGN KEY (connection) REFERENCES connections (connection)
+#            )""")
+#
+#        for idx in ["headerkey","headervalue"]:
+#            self.cursor.execute("""CREATE INDEX IF NOT EXISTS httpheaders_%s_idx
+#            ON httpheaders (httpheader_%s)""" % (idx, idx))
+
+
+        # connection index for all 
+        for idx in ["dcerpcbinds", "dcerpcrequests", "emu_profiles", "emu_services", "offers", "downloads", "p0fs", "logins", "mssql_fingerprints", "mssql_commands","mysql_commands","sip_commands"]:
+            if not index_exists("%s_connection_idx" % (idx)):
+                self.cursor.execute("""CREATE INDEX %s_connection_idx    ON %s (connection)""" % (idx, idx))
+
+
+        self.dbh.commit()
+
+
+        # updates, database schema corrections for old versions
+
+        # svn rev 2143 removed the table dcerpcs
+        # and created the table dcerpcrequests
+        #
+        # copy the data to the new table dcerpcrequests
+        # drop the old table
+        try:
+            logger.debug("Updating Table dcerpcs")
+            self.cursor.execute("""INSERT INTO
+                                    dcerpcrequests (connection, dcerpcrequest_uuid, dcerpcrequest_opnum)
+                                SELECT
+                                    connection, dcerpc_uuid, dcerpc_opnum
+                                FROM
+                                    dcerpcs""")
+            self.cursor.execute("""DROP TABLE dcerpcs""")
+            logger.debug("... done")
+        except Exception as e:
+            #            print(e)
+            logger.debug("... not required")
+
+
+    def start(self):
+        ihandler.__init__(self, self.path)
+        # mapping socket -> attackid
+        self.attacks = {}
+
+        self.pending = {}
+
+        self.log_mode = g_dionaea.config()['modules']['python']['logsql']['mode']
+
+        if self.log_mode == 'sqlite':
+            self.sqlite_init()
+        elif self.log_mode == 'postgresql_psycopg2':
+            self.postgresql_init()
+
+
     def __del__(self):
         logger.info("Closing %s handle" % (self.log_mode))
         if self.log_mode == 'sqlite':
