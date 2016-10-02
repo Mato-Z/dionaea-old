@@ -171,19 +171,6 @@ listen =
 	     
 	mode = "getifaddrs"
 	addrs = { eth0 = ["::"] }
-
-	/*
-	ssl = {
-		default = {
-			c = "GB"
-			cn = "www.example.org"
-			o = "Example Inc."
-			ou = ""
-			// key = "server.key"
-			// cert = "server.crt"
-		}
-	}
-	*/
 }
 
 modules = {
@@ -261,12 +248,6 @@ modules = {
 			 * not 0.0.0.0 - gets resolved as hostname and used
 			 */
 			active-host = "0.0.0.0"
-			/*
-			response_messages = {
-				welcome_msg = "220 DiskStation FTP server ready."
-			}
-			*/
-
 		}
 		tftp = {
 			root = "var/dionaea/wwwroot"
@@ -274,57 +255,6 @@ modules = {
 		http = {
 			root = "var/dionaea/wwwroot"
 			max-request-size = "32768" // maximum size in kbytes of the request (32MB)
-			/*
-			global_headers = [
-				["Server", "nginx"]
-			]
-			*/
-			/*
-			headers = [
-				{
-					filename_pattern = ".*\\.php"
-					headers = [
-						["Content-Type", "text/html; charset=utf-8"]
-						["Content-Length", "{content_length}"]
-						["Connection", "{connection}"]
-						["X-Powered-By", "PHP/5.5.9-1ubuntu4.5"]
-					]
-				}
-			]
-			*/
-		}
-		upnp = {
-			root = "var/dionaea/wwwroot"
-			max-request-size = "32768" // maximum size in kbytes of the request (32MB)
-			personalities-enable = "default"
-			personalities = {
-				default = {
-					cache = "CACHE-CONTROL: max-age=120\r\n"
-					st       = "ST: upnp:rootdevice\r\n"
-					usn      = "USN: uuid:Upnp-IPMI-1_0-1234567890001::upnp:rootdevice\r\n"
-					server   = "SERVER: Linux/2.6.17.WB_WPCM450.1.3 UPnP/1.0, Intel SDK for UPnP devices/1.3.1\r\n"
-					location = "LOCATION: http://192.168.0.1:49152/IPMIdevicedesc.xml\r\n"
-					opt      = "OPT: http://schemas.upnp.org/upnp/1/0/\r\n"
-				}
-
-				samsung-tv = {
-					cache    = "CACHE-CONTROL: max-age=900\r\n"
-					st       = "ST: uuid:c1fd12b2-d954-4dba-9e92-a697e1558fb4\r\n"
-					usn      = "USN: uuid:c1fd12b2-d954-4dba-9e92-a697e1558fb4\r\n"
-					server   = "SERVER: SHP, UPnP/1.0, Samsung UPnP SDK/1.0\r\n"
-					location = "LOCATION: http://192.168.0.10:7677/MainTVServer2\r\n"
-					opt      = "OPT: http://schemas.upnp.org/upnp/1/0/\r\n"
-				}
-			
-				xbox360 = {
-					cache    = "CACHE-CONTROL: max-age=1800\r\n"
-					st       = "ST: urn:microsoft.com:service:X_MS_MediaReceiverRegistrar:1\r\n"
-					usn      = "USN: uuid:531c567a-8c46-4201-bcd4-09afa554d859::urn:microsoft.com:service:X_MS_MediaReceiverRegistrar:1\r\n"
-					server   = "SERVER: Microsoft-Windows/6.3 UPnP/1.0 UPnP-Device-Host/1.0\r\n"
-					location = "LOCATION: http://192.168.0.10:1055/upnphost/udhisapi.dll?content=uuid:531c567a-8c46-4201-bcd4-09afa554d859\r\n"
-					opt      = "OPT: http://schemas.upnp.org/upnp/1/0/\r\n"
-				}
-			}
 		}
 		sip = {
 			udp = {
@@ -430,24 +360,17 @@ modules = {
 				dynip_resolve = "http://hpfriends.honeycloud.net/ip"
 			}
 		}
-		log_db_sql = [
-			{
-				url = "sqlite:////tmp/dionaea1.db"
-			}
-			{
-				url = "sqlite:////tmp/dionaea2.db"
-			}
-		]
-		log_json = {
-		    handlers = [
-		        "http://127.0.0.1:8080/"
-		        //"file:///tmp/dionaea.json"
-		    ]
-		}
 		logsql = {
-			mode = "sqlite" // so far there is only sqlite
+			mode = "sqlite" // so far there is only sqlite and postgresql_psycopg2
 			sqlite = {
 				file = "var/dionaea/logsql.sqlite"
+			}
+			postgresql_psycopg2 = {
+				database = "dbname"
+				user = "username"
+				password = "password"
+				host = "127.0.0.1"
+				port = "5432"
 			}
 		}
 		logxmpp = {
@@ -554,47 +477,22 @@ modules = {
 		}
 
 		ihandlers = {
-			handlers = [
-				// Download samples and emulation
-				"ftpdownload",
-				"tftpdownload",
-				"emuprofile",
-				"cmdshell",
-				"store",
-				"uniquedownload",
-//				"nfq",
-//				"p0f",
-			 	// Submit samples for further inspection
-//				"mwserv",
-//				"submit_http",
-				// Logging
-//				"logsql",
-//				"log_db_sql",
-//				"log_json",
-//				"virustotal",
-//				"hpfeeds",
-//				"logxmpp",
-//				"surfids",
-//				"fail2ban",
+			handlers = ["ftpdownload", "tftpdownload", "emuprofile", "cmdshell", "store", "uniquedownload", 
+			"logsql",
+//			"virustotal",
+//			"mwserv",
+//			"submit_http",
+			"hpfeeds",
+//			"logxmpp",
+//			"nfq",
+//			"p0f",
+//			"surfids",
+//			"fail2ban"
 			]
 		}
 
 		services = {
-			serve = [
-				"epmap",
-				"ftp",
-				"http",
-				"https",
-				"mirror",
-				"mqtt",
-				"mssql",
-				"mysql",
-				"pptp",
-				"sip",
-				"smb",
-				"tftp",
-				"upnp",
-			]
+			serve = ["http", "https", "tftp", "ftp", "mirror", "smb", "epmap", "sip","mssql", "mysql"]
 		}
 
 	}
@@ -790,5 +688,3 @@ modules = {
 	}
  */
 }
-
-
