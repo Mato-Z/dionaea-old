@@ -445,11 +445,8 @@ modules = {
 		    ]
 		}
 		logsql = {
-			mode = "sqlite" // so far there is only sqlite and postgresql_psycopg2
-			sqlite = {
-				file = "var/dionaea/logsql.sqlite"
-			}
-			postgresql_psycopg2 = {
+			mode = "mysql" // so far there is only sqlite and postgresql_psycopg2
+			mysql = {
 				database = "dbname"
 				user = "username"
 				password = "password"

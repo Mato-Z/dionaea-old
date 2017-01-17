@@ -31,8 +31,8 @@ from dionaea.smb import smb
 
 import logging
 
-import postgresql.driver as pg_driver
-from postgresql.exceptions import ConnectionError
+import mysql.connector
+from mysql.connector import Error
 
 logger = logging.getLogger('surfids')
 logger.setLevel(logging.DEBUG)
@@ -73,7 +73,7 @@ class surfidshandler(ihandler):
 
     def connect(self):
         #        print(g_dionaea.config()['modules']['python']['surfids'])
-        self.dbh = pg_driver.connect(user = g_dionaea.config()['modules']['python']['surfids']['username'],
+        self.dbh = mysql.connector.connect(user = g_dionaea.config()['modules']['python']['surfids']['username'],
                                      password = g_dionaea.config()['modules']['python'][
             'surfids']['password'],
             database = g_dionaea.config()['modules']['python'][
@@ -110,7 +110,7 @@ class surfidshandler(ihandler):
             try:
                 method(icd)
                 return
-            except ConnectionError as e:
+            except Error as e:
                 logger.warn("ConnectionError %s" % e)
                 time.sleep(1)
                 self.connect()
