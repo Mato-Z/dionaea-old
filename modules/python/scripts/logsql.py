@@ -354,7 +354,7 @@ class logsqlhandler(ihandler):
         if con not in self.attacks:
             return
         attackid = self.attacks[con][1]
-        logger.info("offer for attackid %i" % attackid):
+        logger.info("offer for attackid %i" % attackid)
         try:
             self.cursor.execute("INSERT INTO offers (connection, offer_url) VALUES (%s,%s)",
                     (attackid, icd.url) )
